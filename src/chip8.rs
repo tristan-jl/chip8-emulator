@@ -50,17 +50,24 @@ impl Chip8 {
         0xF0, 0x80, 0xF0, 0x80, 0x80, // F
     ];
 
+    const fn start_memory() -> [u8; Self::MEMORY_SIZE] {
+        let mut memory = [0; Self::MEMORY_SIZE];
+
+        let mut i = 0;
+        while i < Self::FONTSET.len() {
+            memory[i + Self::FONTSET_START_ADDRESS] = Self::FONTSET[i];
+            i += 1;
+        }
+
+        memory
+    }
+
     pub fn read_rom(filename: &str) -> io::Result<Self> {
         let mut f = File::open(filename)?;
-        let mut memory = [0; Self::MEMORY_SIZE];
+        let mut memory = Self::start_memory();
 
         let n = f.read(&mut memory[Self::START_ADDRESS..])?;
         debug!("Read {} bytes", n);
-
-        // TODO do at compile time - build.rs ?
-        // https://dev.to/rustyoctopus/generating-static-arrays-during-compile-time-in-rust-10d8
-        memory[Self::FONTSET_START_ADDRESS..(Self::FONTSET_START_ADDRESS + Self::FONTSET.len())]
-            .copy_from_slice(&Self::FONTSET);
 
         Ok(Self {
             registers: [0; 16],

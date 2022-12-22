@@ -53,7 +53,6 @@ impl<'a> Screen<'a> {
             let mut rects: [MaybeUninit<Rect>; Display::SIZE] =
                 unsafe { MaybeUninit::uninit().assume_init() };
 
-            // TODO do at compile time
             for (i, item) in rects.iter_mut().enumerate() {
                 *item = MaybeUninit::new(Rect::from_center(
                     (
