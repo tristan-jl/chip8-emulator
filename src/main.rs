@@ -50,6 +50,9 @@ impl<'a> Screen<'a> {
     pub(crate) fn new(canvas: &'a mut Canvas<Window>) -> Self {
         let (pixel_size_x, pixel_size_y) = Self::pixel_size(canvas);
         let rects = {
+            // Safety:
+            // `assume_init` is safe here because the type we are claiming to have initialised here is a
+            // bunch of `MaybeUninit`s, which do not require initialisation
             let mut rects: [MaybeUninit<Rect>; Display::SIZE] =
                 unsafe { MaybeUninit::uninit().assume_init() };
 
@@ -65,6 +68,8 @@ impl<'a> Screen<'a> {
                     pixel_size_y,
                 ));
             }
+            // Safety:
+            // Everything is now initialised. Transmute the array to the initialised type.
             unsafe { std::mem::transmute::<_, [Rect; Display::SIZE]>(rects) }
         };
         Self { canvas, rects }
