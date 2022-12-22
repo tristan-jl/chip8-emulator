@@ -128,7 +128,7 @@ fn main() {
 
     let mut chip8 = chip8::Chip8::read_rom("test_opcode.ch8").unwrap();
 
-    let cycle_delay = Duration::new(0, 100 * 1_000_000); // 100 ms
+    let cycle_delay = Duration::new(0, 10 * 1_000_000); // 10 ms
     let mut last_cycle_time = Instant::now();
     let mut dt: Duration;
     let mut keys_pressed = Vec::new();

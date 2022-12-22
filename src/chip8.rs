@@ -368,7 +368,7 @@ impl Chip8 {
                 let vx = self.registers[x as usize];
                 debug!("Ex9E - SKP V{:x} ({:x})", x, vx);
 
-                if self.keypad[self.registers[vx as usize] as usize] == 1 {
+                if self.keypad[vx as usize] == 1 {
                     PC::Skip
                 } else {
                     PC::Next
@@ -379,9 +379,7 @@ impl Chip8 {
                 let vx = self.registers[x as usize];
                 debug!("ExA1 - SKNP V{:x} ({:x})", x, vx);
 
-                let key = self.registers[vx as usize];
-
-                if self.keypad[key as usize] != 1 {
+                if self.keypad[vx as usize] != 1 {
                     PC::Skip
                 } else {
                     PC::Next
@@ -392,7 +390,7 @@ impl Chip8 {
                 let vx = self.registers[x as usize];
                 debug!("Fx07 - LD V{:x} ({:x}), DT", x, vx);
 
-                self.registers[vx as usize] = self.delay_timer;
+                self.registers[x as usize] = self.delay_timer;
                 PC::Next
             }
             // Fx0A - LD Vx, K
@@ -404,7 +402,7 @@ impl Chip8 {
 
                 for (n, &i) in self.keypad.iter().enumerate() {
                     if i == 1 {
-                        self.registers[vx as usize] = n as u8;
+                        self.registers[x as usize] = n as u8;
                         pressed = true;
                         break;
                     }
@@ -421,7 +419,7 @@ impl Chip8 {
                 let vx = self.registers[x as usize];
                 debug!("Fx15 - LD DT, V{:x} ({:x})", x, vx);
 
-                self.delay_timer = self.registers[vx as usize];
+                self.delay_timer = vx;
 
                 PC::Next
             }
@@ -430,7 +428,7 @@ impl Chip8 {
                 let vx = self.registers[x as usize];
                 debug!("Fx18 - LD ST, V{:x} ({:x})", x, vx);
 
-                self.sound_timer = self.registers[vx as usize];
+                self.sound_timer = self.registers[x as usize];
 
                 PC::Next
             }
@@ -439,7 +437,7 @@ impl Chip8 {
                 let vx = self.registers[x as usize];
                 debug!("Fx1E - ADD {:x}, V{:x} ({:x})", self.index, x, vx);
 
-                self.index += self.registers[vx as usize] as usize;
+                self.index += vx as usize;
 
                 PC::Next
             }
@@ -449,7 +447,7 @@ impl Chip8 {
                 debug!("Fx29 - LD F, V{:x} ({:x})", x, vx);
 
                 self.index =
-                    Self::FONTSET_START_ADDRESS + (5 * self.registers[vx as usize] as usize);
+                    Self::FONTSET_START_ADDRESS + (5 * self.registers[x as usize] as usize);
 
                 PC::Next
             }
