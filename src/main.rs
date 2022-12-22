@@ -1,514 +1,187 @@
+mod chip8;
 mod display;
 mod lsfr;
 
-use log::*;
-use std::fs::File;
-use std::io::{self, Read};
+use std::time::{Duration, Instant};
 
-#[derive(Debug)]
-struct Chip8 {
-    registers: [u8; 16],
-    memory: [u8; 4096],
-    index: usize,
-    pc: usize,
-    stack: [u16; 16],
-    sp: usize,
-    delay_timer: u8,
-    sound_timer: u8,
-    keypad: [u8; 16],
-    display: display::Display,
-    lsfr: lsfr::Lsfr,
+use log::debug;
+use sdl2::event::Event;
+use sdl2::keyboard::Keycode;
+use sdl2::pixels::Color;
+use sdl2::rect::Rect;
+use sdl2::render::Canvas;
+use sdl2::video::Window;
+use std::mem::MaybeUninit;
+
+use self::display::Display;
+
+#[inline(always)]
+fn keycode_to_idx(key: Keycode) -> Option<usize> {
+    match key {
+        Keycode::Num1 => Some(0x1),
+        Keycode::Num2 => Some(0x2),
+        Keycode::Num3 => Some(0x3),
+        Keycode::Q => Some(0x4),
+        Keycode::W => Some(0x5),
+        Keycode::E => Some(0x6),
+        Keycode::A => Some(0x7),
+        Keycode::S => Some(0x8),
+        Keycode::D => Some(0x9),
+        Keycode::Z => Some(0xA),
+        Keycode::X => Some(0x0),
+        Keycode::C => Some(0xB),
+        Keycode::Num4 => Some(0xC),
+        Keycode::R => Some(0xD),
+        Keycode::F => Some(0xE),
+        Keycode::V => Some(0xF),
+        _ => None,
+    }
 }
 
-enum PC {
-    Next,
-    Skip,
-    Jump(usize),
+pub(crate) struct Screen<'a> {
+    canvas: &'a mut Canvas<Window>,
+    rects: [Rect; Display::SIZE],
 }
 
-impl Chip8 {
-    const START_ADDRESS: usize = 0x200;
-    const FONTSET_START_ADDRESS: usize = 0x50;
-    const FONTSET: [u8; 80] = [
-        0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
-        0x20, 0x60, 0x20, 0x20, 0x70, // 1
-        0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
-        0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
-        0x90, 0x90, 0xF0, 0x10, 0x10, // 4
-        0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
-        0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
-        0xF0, 0x10, 0x20, 0x40, 0x40, // 7
-        0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
-        0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
-        0xF0, 0x90, 0xF0, 0x90, 0x90, // A
-        0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
-        0xF0, 0x80, 0x80, 0x80, 0xF0, // C
-        0xE0, 0x90, 0x90, 0x90, 0xE0, // D
-        0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
-        0xF0, 0x80, 0xF0, 0x80, 0x80, // F
-    ];
+impl<'a> Screen<'a> {
+    const DISPLAY_ON_PIXEL: Color = Color::RGB(255, 255, 255);
+    const DISPLAY_OFF_PIXEL: Color = Color::RGB(0, 0, 0);
 
-    pub fn read_rom(filename: &str) -> io::Result<Self> {
-        let mut f = File::open(filename)?;
-        let mut memory = [0; 4096];
+    pub(crate) fn new(canvas: &'a mut Canvas<Window>) -> Self {
+        let (pixel_size_x, pixel_size_y) = Self::pixel_size(canvas);
+        let rects = {
+            let mut rects: [MaybeUninit<Rect>; Display::SIZE] =
+                unsafe { MaybeUninit::uninit().assume_init() };
 
-        let n = f.read(&mut memory[Self::START_ADDRESS..])?;
-        debug!("Read {} bytes", n);
-
-        // TODO do at compile time - build.rs ? https://dev.to/rustyoctopus/generating-static-arrays-during-compile-time-in-rust-10d8
-        memory[Self::FONTSET_START_ADDRESS..(Self::FONTSET_START_ADDRESS + Self::FONTSET.len())]
-            .copy_from_slice(&Self::FONTSET);
-
-        Ok(Self {
-            registers: [0; 16],
-            memory,
-            index: 0,
-            pc: Self::START_ADDRESS,
-            stack: [0; 16],
-            sp: 0,
-            delay_timer: 0,
-            sound_timer: 0,
-            keypad: [0; 16],
-            display: display::Display::new(),
-            lsfr: lsfr::Lsfr::new(),
-        })
-    }
-
-    fn gen_random(&mut self) -> u8 {
-        self.lsfr.gen()
-    }
-
-    fn process_instruction(&mut self, instruction: u16) {
-        let x = instruction.to_be_bytes();
-        let o1: u8 = x[0] >> 4;
-        let o2: u8 = x[0] & 0xf;
-        let o3: u8 = x[1] >> 4;
-        let o4: u8 = x[1] & 0xf;
-
-        #[inline(always)]
-        fn nnn(n1: u8, n2: u8, n3: u8) -> u16 {
-            ((n1 as u16) << 8) + ((n2 as u16) << 4) + n3 as u16
-        }
-        #[inline(always)]
-        fn var(x1: u8, x2: u8) -> u8 {
-            ((x1 as u8) << 4) + x2 as u8
-        }
-
-        debug!("instruction: {:x}{:x}{:x}{:x}", o1, o2, o3, o4);
-
-        let pc_change = match (o1, o2, o3, o4) {
-            // 00E0 - CLS
-            (0x0, 0x0, 0xE, 0x0) => {
-                debug!("00E0 - CLS");
-
-                self.display.clear();
-                PC::Next
+            // TODO do at compile time
+            for (i, item) in rects.iter_mut().enumerate() {
+                *item = MaybeUninit::new(Rect::from_center(
+                    (
+                        ((pixel_size_x * (i % Display::VIDEO_WIDTH) as u32) + pixel_size_x / 2)
+                            as i32,
+                        ((pixel_size_y * (i / Display::VIDEO_WIDTH) as u32) + pixel_size_y / 2)
+                            as i32,
+                    ),
+                    pixel_size_x,
+                    pixel_size_y,
+                ));
             }
-            // 00EE - RET
-            (0x0, 0x0, 0xE, 0xE) => {
-                debug!("00EE - RET");
-
-                self.sp -= 1;
-                PC::Jump(self.stack[self.sp] as usize)
-            }
-            // 1nnn - JP addr
-            (0x1, n1, n2, n3) => {
-                let nnn = nnn(n1, n2, n3) as usize;
-                debug!("1nnn - JP {:x}", nnn);
-
-                PC::Jump(nnn)
-            }
-            // 2nnn - CALL addr
-            (0x2, n1, n2, n3) => {
-                let nnn = nnn(n1, n2, n3) as usize;
-                debug!("2nnn - CALL {:x}", nnn);
-
-                self.stack[self.sp] = self.pc as u16;
-                self.sp += 1;
-                PC::Jump(nnn)
-            }
-            // 3xkk - SE Vx, byte
-            (0x3, x, k1, k2) => {
-                let vx = self.registers[x as usize];
-                let kk = var(k1, k2);
-                debug!("3xkk - SE V{:x} ({:x}) {:x}", x, vx, kk);
-
-                if vx == kk {
-                    PC::Skip
-                } else {
-                    PC::Next
-                }
-            }
-            // 4xkk - SNE Vx, byte
-            (0x4, x, k1, k2) => {
-                let vx = self.registers[x as usize];
-                let kk = var(k1, k2);
-                debug!("4xkk - SNE V{:x} ({:x}) {:x}", x, vx, kk);
-
-                if vx != kk {
-                    PC::Skip
-                } else {
-                    PC::Next
-                }
-            }
-            // 5xy0 - SE Vx, Vy
-            (0x5, x, y, 0x0) => {
-                let vx = self.registers[x as usize];
-                let vy = self.registers[y as usize];
-                debug!("5xy0 - SE V{:x} ({:x}) V{:x} ({:x})", x, vx, y, vy);
-
-                if vx == vy {
-                    PC::Skip
-                } else {
-                    PC::Next
-                }
-            }
-            // 6xkk - LD Vx, byte
-            (0x6, x, k1, k2) => {
-                let kk = var(k1, k2);
-                debug!(
-                    "6xkk - LD V{:x} ({:x}) {:x}",
-                    x, self.registers[x as usize], kk
-                );
-
-                self.registers[x as usize] = kk;
-                PC::Next
-            }
-            // 7xkk - ADD Vx, byte
-            (0x7, x, k1, k2) => {
-                let kk = var(k1, k2);
-                debug!(
-                    "7xkk - ADD V{:x} ({:x}) {:x}",
-                    x, self.registers[x as usize], kk
-                );
-
-                self.registers[x as usize] = self.registers[x as usize].overflowing_add(kk).0;
-                PC::Next
-            }
-            // 8xy0 - LD Vx, Vy
-            (0x8, x, y, 0x0) => {
-                debug!(
-                    "8xy0 - LD V{:x} ({:x}), V{:x} ({:x})",
-                    x, self.registers[x as usize], y, self.registers[y as usize]
-                );
-
-                self.registers[x as usize] = self.registers[y as usize];
-                PC::Next
-            }
-            // 8xy1 - OR Vx, Vy
-            (0x8, x, y, 0x1) => {
-                debug!(
-                    "8xy1 - OR V{:x} ({:x}), V{:x} ({:x})",
-                    x, self.registers[x as usize], y, self.registers[y as usize]
-                );
-                self.registers[x as usize] |= self.registers[y as usize];
-                PC::Next
-            }
-            // 8xy2 - AND Vx, Vy
-            (0x8, x, y, 0x2) => {
-                debug!(
-                    "8xy2 - AND V{:x} ({:x}), V{:x} ({:x})",
-                    x, self.registers[x as usize], y, self.registers[y as usize]
-                );
-
-                self.registers[x as usize] &= self.registers[y as usize];
-                PC::Next
-            }
-            // 8xy3 - XOR Vx, Vy
-            (0x8, x, y, 0x3) => {
-                debug!(
-                    "8xy3 - XOR V{:x} ({:x}), V{:x} ({:x})",
-                    x, self.registers[x as usize], y, self.registers[y as usize]
-                );
-
-                self.registers[x as usize] ^= self.registers[y as usize];
-                PC::Next
-            }
-            // 8xy4 - ADD Vx, Vy
-            (0x8, x, y, 0x4) => {
-                debug!(
-                    "8xy4 - ADD V{:x} ({:x}), V{:x} ({:x})",
-                    x, self.registers[x as usize], y, self.registers[y as usize]
-                );
-
-                let s = (self.registers[x as usize] as u16) + (self.registers[y as usize] as u16);
-
-                if s > 0xFF {
-                    self.registers[0xF] = 1;
-                } else {
-                    self.registers[0xF] = 0;
-                }
-                self.registers[x as usize] = (s & 0xFF) as u8;
-
-                PC::Next
-            }
-            // 8xy5 - SUB Vx, Vy
-            (0x8, x, y, 0x5) => {
-                debug!(
-                    "8xy5 - SUB V{:x} ({:x}), V{:x} ({:x})",
-                    x, self.registers[x as usize], y, self.registers[y as usize]
-                );
-
-                let (d, flag) = (self.registers[x as usize] as u16)
-                    .overflowing_sub(self.registers[y as usize] as u16);
-
-                if !flag {
-                    self.registers[0xF] = 1;
-                } else {
-                    self.registers[0xF] = 0;
-                }
-                self.registers[x as usize] = d as u8;
-
-                PC::Next
-            }
-            // 8xy6 - SHR Vx
-            (0x8, x, _y, 0x6) => {
-                debug!("8xy6 - SHR V{:x} ({:x})", x, self.registers[x as usize]);
-
-                self.registers[0xF] = self.registers[x as usize] & 0x1;
-                self.registers[x as usize] /= 2;
-
-                PC::Next
-            }
-            // 8xy7 - SUBN Vx, Vy
-            (0x8, x, y, 0x7) => {
-                let vx = self.registers[x as usize];
-                let vy = self.registers[y as usize];
-                debug!("8xy7 - SUBN V{:x} ({:x}), V{:x} ({:x})", x, vx, y, vy);
-
-                let (d, flag) = vy.overflowing_sub(vx);
-
-                if !flag {
-                    self.registers[0xF] = 1;
-                } else {
-                    self.registers[0xF] = 0;
-                }
-                self.registers[x as usize] = d;
-
-                PC::Next
-            }
-            // 8xyE - SHL VX {, Vy}
-            (0x8, x, _y, 0xE) => {
-                debug!(
-                    "8xyE - SHL V{:x} ({:x}) {{, Vy}}",
-                    x, self.registers[x as usize]
-                );
-
-                self.registers[0xF] = self.registers[x as usize] >> 7;
-                self.registers[x as usize] = self.registers[x as usize].overflowing_mul(2).0;
-
-                PC::Next
-            }
-            // 9xy0 - SNE Vx, Vy
-            (0x9, x, y, 0x0) => {
-                let vx = self.registers[x as usize];
-                let vy = self.registers[y as usize];
-                debug!("9xy0 - SNE V{:x} ({:x}), V{:x} ({:x})", x, vx, y, vy);
-
-                if vx != vy {
-                    PC::Skip
-                } else {
-                    PC::Next
-                }
-            }
-            // Annn - LD I, addr
-            (0xA, n1, n2, n3) => {
-                let nnn = nnn(n1, n2, n3) as usize;
-                debug!("Annn - LD {:x}, {:x}", self.index, nnn);
-
-                self.index = nnn;
-                PC::Next
-            }
-            // Bnnn - LD V0, addr
-            (0xB, n1, n2, n3) => {
-                let nnn = nnn(n1, n2, n3) as usize;
-                debug!("Bnnn - LD V0, {:x}", nnn);
-
-                PC::Jump(nnn)
-            }
-            // Cxkk - RND Vx, byte
-            (0xC, x, k1, k2) => {
-                let kk = var(k1, k2);
-                debug!(
-                    "Cxkk - RND V{:x} ({:x}), {:x}",
-                    x, self.registers[x as usize], kk
-                );
-
-                self.registers[x as usize] = self.gen_random() & kk;
-                PC::Next
-            }
-            // Dxyn - DRW Vx, Vy, nibble
-            (0xD, x, y, n) => {
-                let vx = self.registers[x as usize];
-                let vy = self.registers[y as usize];
-                debug!(
-                    "Dxyn - DRW V{:x} ({:x}), V{:x} ({:x}), {:x}",
-                    x, vx, y, vy, n
-                );
-
-                let since = self.index as usize;
-                let until = since + n as usize;
-                let bytes = &self.memory[since..until].to_vec();
-
-                self.registers[0xF] = self.display.draw(vx, vy, bytes);
-                PC::Next
-            }
-            // Ex9E - SKP Vx
-            (0xE, x, 0x9, 0xE) => {
-                let vx = self.registers[x as usize];
-                debug!("Ex9E - SKP V{:x} ({:x})", x, vx);
-
-                if self.keypad[self.registers[vx as usize] as usize] == 1 {
-                    PC::Skip
-                } else {
-                    PC::Next
-                }
-            }
-            // ExA1 - SKNP Vx
-            (0xE, x, 0xA, 0x1) => {
-                let vx = self.registers[x as usize];
-                debug!("ExA1 - SKNP V{:x} ({:x})", x, vx);
-
-                let key = self.registers[vx as usize];
-
-                if self.keypad[key as usize] != 1 {
-                    PC::Skip
-                } else {
-                    PC::Next
-                }
-            }
-            // Fx07 - LD Vx, DT
-            (0xF, x, 0x0, 0x7) => {
-                let vx = self.registers[x as usize];
-                debug!("Fx07 - LD V{:x} ({:x}), DT", x, vx);
-
-                self.registers[vx as usize] = self.delay_timer;
-                PC::Next
-            }
-            // Fx0A - LD Vx, K
-            (0xF, x, 0x0, 0xA) => {
-                let vx = self.registers[x as usize];
-                debug!("Fx0A - LD V{:x} ({:x}), K", x, vx);
-
-                let mut pressed = false;
-
-                for (n, &i) in self.keypad.iter().enumerate() {
-                    if i == 1 {
-                        self.registers[vx as usize] = n as u8;
-                        pressed = true;
-                        break;
-                    }
-                }
-
-                if pressed {
-                    PC::Next
-                } else {
-                    PC::Jump(self.pc)
-                }
-            }
-            // Fx15 - LD DT, Vx
-            (0xF, x, 0x1, 0x5) => {
-                let vx = self.registers[x as usize];
-                debug!("Fx15 - LD DT, V{:x} ({:x})", x, vx);
-
-                self.delay_timer = self.registers[vx as usize];
-
-                PC::Next
-            }
-            // Fx18 - LD ST, Vx
-            (0xF, x, 0x1, 0x8) => {
-                let vx = self.registers[x as usize];
-                debug!("Fx18 - LD ST, V{:x} ({:x})", x, vx);
-
-                self.sound_timer = self.registers[vx as usize];
-
-                PC::Next
-            }
-            // Fx1E - ADD I, Vx
-            (0xF, x, 0x1, 0xE) => {
-                let vx = self.registers[x as usize];
-                debug!("Fx1E - ADD {:x}, V{:x} ({:x})", self.index, x, vx);
-
-                self.index += self.registers[vx as usize] as usize;
-
-                PC::Next
-            }
-            // Fx29 - LD F, Vx
-            (0xF, x, 0x2, 0x9) => {
-                let vx = self.registers[x as usize];
-                debug!("Fx29 - LD F, V{:x} ({:x})", x, vx);
-
-                self.index =
-                    Self::FONTSET_START_ADDRESS + (5 * self.registers[vx as usize] as usize);
-
-                PC::Next
-            }
-            // Fx33 - LD B, Vx
-            (0xF, x, 0x3, 0x3) => {
-                let vx = self.registers[x as usize];
-                debug!("Fx33 - LD B, V{:x} ({:x})", x, vx);
-
-                self.memory[self.index] = (vx / 100) as u8 % 10;
-                self.memory[self.index + 1] = (vx / 10) as u8 % 10;
-                self.memory[self.index + 2] = vx % 10;
-
-                PC::Next
-            }
-            // Fx55 - LD [I], Vx
-            (0xF, x, 0x5, 0x5) => {
-                debug!("Fx55 - LD [I], V{:x}", x);
-
-                for n in 0..(x as usize + 1) {
-                    self.memory[self.index + n as usize] = self.registers[n as usize];
-                }
-
-                PC::Next
-            }
-            // Fx65 - LD Vx, [I]
-            (0xF, x, 0x6, 0x5) => {
-                debug!("Fx65 - LD V{:x}, [I]", x);
-
-                for n in 0..(x as usize + 1) {
-                    self.registers[n] = self.memory[self.index as usize + n];
-                }
-
-                PC::Next
-            }
-            _ => panic!("Unknown instruction: {:x}{:x}{:x}{:x}", o1, o2, o3, o4),
+            unsafe { std::mem::transmute::<_, [Rect; Display::SIZE]>(rects) }
         };
-
-        match pc_change {
-            PC::Next => self.pc += 2,
-            PC::Skip => self.pc += 4,
-            PC::Jump(v) => self.pc = v,
-        }
+        Self { canvas, rects }
     }
 
-    fn cycle(&mut self) {
-        let opcode = ((self.memory[self.pc] as u16) << 8) | self.memory[self.pc + 1] as u16;
-        self.process_instruction(opcode);
-
-        if self.delay_timer > 0 {
-            self.delay_timer -= 1;
-        }
-        if self.sound_timer > 0 {
-            self.sound_timer -= 1;
-        }
+    #[inline(always)]
+    fn pixel_size(canvas: &Canvas<Window>) -> (u32, u32) {
+        let (window_width, window_height) = canvas.window().size();
+        (
+            (window_width as usize / Display::VIDEO_WIDTH) as u32,
+            (window_height as usize / Display::VIDEO_HEIGHT) as u32,
+        )
     }
 
-    pub fn run(&mut self) {
-        loop {
-            if self.pc + 1 >= 0xFFF {
-                break;
+    pub(crate) fn update_from_video(&mut self, video: &[u32; Display::SIZE]) {
+        let (pixel_size_x, pixel_size_y) = Self::pixel_size(self.canvas);
+
+        self.canvas.clear();
+
+        for ((n, pixel), rect) in video.iter().enumerate().zip(self.rects.iter()) {
+            let display_x = pixel_size_x * (n % Display::VIDEO_WIDTH) as u32;
+            let display_y = pixel_size_y * (n / Display::VIDEO_WIDTH) as u32;
+
+            if *pixel == 0 {
+                self.canvas.set_draw_color(Self::DISPLAY_OFF_PIXEL)
+            } else if *pixel == 1 {
+                self.canvas.set_draw_color(Self::DISPLAY_ON_PIXEL)
+            } else {
+                unreachable!()
             }
-            self.cycle();
+            self.canvas.fill_rect(*rect).unwrap();
         }
+
+        self.canvas.present();
     }
 }
 
 fn main() {
     env_logger::init();
+    let sdl_context = sdl2::init().unwrap();
 
-    let mut chip8 = Chip8::read_rom("test_opcode.ch8").unwrap();
-    chip8.run();
+    let mut event_pump = sdl_context.event_pump().unwrap();
+    let mut canvas = {
+        let mut canvas = sdl_context
+            .video()
+            .unwrap()
+            .window("chip8", 800, 600)
+            .position_centered()
+            .build()
+            .unwrap()
+            .into_canvas()
+            .build()
+            .unwrap();
+
+        canvas.clear();
+        canvas.present();
+        canvas
+    };
+
+    let mut chip8 = chip8::Chip8::read_rom("test_opcode.ch8").unwrap();
+
+    let cycle_delay = Duration::new(0, 100 * 1_000_000); // 100 ms
+    let mut last_cycle_time = Instant::now();
+    let mut dt: Duration;
+    let mut keys_pressed = Vec::new();
+    let mut keys_up = Vec::new();
+
+    let mut screen = Screen::new(&mut canvas);
+
+    'running: loop {
+        dt = Instant::now().duration_since(last_cycle_time);
+
+        for event in event_pump.poll_iter() {
+            match event {
+                Event::Quit { .. }
+                | Event::KeyDown {
+                    keycode: Some(Keycode::Escape),
+                    ..
+                } => break 'running,
+                Event::KeyDown {
+                    keycode: Some(key), ..
+                } => {
+                    if let Some(k) = keycode_to_idx(key) {
+                        keys_pressed.push(k);
+                    }
+                }
+                Event::KeyUp {
+                    keycode: Some(key), ..
+                } => {
+                    if let Some(k) = keycode_to_idx(key) {
+                        keys_up.push(k);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if dt > cycle_delay {
+            last_cycle_time = Instant::now();
+
+            for i in keys_pressed.drain(..) {
+                debug!("Pressing {}", i);
+                chip8.press_key(i);
+            }
+
+            chip8.cycle();
+
+            for i in keys_up.drain(..) {
+                debug!("Lifting {}", i);
+                chip8.lift_key(i);
+            }
+        }
+
+        if chip8.is_dirty() {
+            screen.update_from_video(chip8.get_video());
+            chip8.set_clean();
+        }
+    }
 }
