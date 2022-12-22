@@ -81,20 +81,17 @@ impl<'a> Screen<'a> {
     }
 
     pub(crate) fn update_from_video(&mut self, video: &[u32; Display::SIZE]) {
-        let (pixel_size_x, pixel_size_y) = Self::pixel_size(self.canvas);
+        debug_assert_eq!(video.len(), self.rects.len());
 
         self.canvas.clear();
 
-        for ((n, pixel), rect) in video.iter().enumerate().zip(self.rects.iter()) {
-            let display_x = pixel_size_x * (n % Display::VIDEO_WIDTH) as u32;
-            let display_y = pixel_size_y * (n / Display::VIDEO_WIDTH) as u32;
-
+        for (pixel, rect) in video.iter().zip(self.rects.iter()) {
             if *pixel == 0 {
                 self.canvas.set_draw_color(Self::DISPLAY_OFF_PIXEL)
             } else if *pixel == 1 {
                 self.canvas.set_draw_color(Self::DISPLAY_ON_PIXEL)
             } else {
-                unreachable!()
+                unreachable!("Unknown pixel colour")
             }
             self.canvas.fill_rect(*rect).unwrap();
         }

@@ -111,8 +111,9 @@ impl Chip8 {
             (0x0, 0x0, 0xE, 0xE) => {
                 debug!("00EE - RET");
 
+                let pc = self.stack[self.sp as usize - 1] as usize;
                 self.sp -= 1;
-                PC::Jump(self.stack[self.sp] as usize)
+                PC::Jump(pc + 2)
             }
             // 1nnn - JP addr
             (0x1, n1, n2, n3) => {
