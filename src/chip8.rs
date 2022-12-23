@@ -7,7 +7,7 @@ use crate::display::Display;
 use crate::lsfr::Lsfr;
 
 #[derive(Debug)]
-pub(crate) struct Chip8 {
+pub struct Chip8 {
     registers: [u8; 16],
     memory: [u8; Self::MEMORY_SIZE],
     index: usize,
