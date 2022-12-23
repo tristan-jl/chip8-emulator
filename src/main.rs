@@ -4,6 +4,7 @@ mod lsfr;
 
 use std::time::{Duration, Instant};
 
+use clap::Parser;
 use log::debug;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
@@ -104,10 +105,7 @@ impl<'a> Screen<'a> {
     }
 }
 
-fn main() {
-    env_logger::init();
-    let sdl_context = sdl2::init().unwrap();
-
+fn run_chip8(sdl_context: sdl2::Sdl, mut chip8: chip8::Chip8, cycle_delay: u32) {
     let mut event_pump = sdl_context.event_pump().unwrap();
     let mut canvas = {
         let mut canvas = sdl_context
@@ -126,9 +124,7 @@ fn main() {
         canvas
     };
 
-    let mut chip8 = chip8::Chip8::read_rom("test_opcode.ch8").unwrap();
-
-    let cycle_delay = Duration::new(0, 10 * 1_000_000); // 10 ms
+    let cycle_delay = Duration::new(0, cycle_delay * 1_000_000); // 10 ms
     let mut last_cycle_time = Instant::now();
     let mut dt: Duration;
     let mut keys_pressed = Vec::new();
@@ -185,4 +181,27 @@ fn main() {
             chip8.set_clean();
         }
     }
+}
+
+/// Chip8 emulator
+#[derive(Parser, Debug)]
+#[command(author, version,about, long_about=None)]
+struct Args {
+    /// Rom path
+    #[arg(short, long)]
+    rom_path: String,
+
+    /// Cycle delay in milliseconds
+    #[arg(short, long, default_value_t = 10)]
+    cycle_delay: u32,
+}
+
+fn main() {
+    env_logger::init();
+    let sdl_context = sdl2::init().unwrap();
+
+    let args = Args::parse();
+
+    let chip8 = chip8::Chip8::read_rom(&args.rom_path).unwrap();
+    run_chip8(sdl_context, chip8, args.cycle_delay);
 }
