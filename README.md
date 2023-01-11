@@ -19,3 +19,13 @@ Options:
   -h, --help                       Print help information
   -V, --version                    Print version information
 ```
+
+## Screenshots
+
+Using a test rom:
+
+![test rom](./images/test_rom.png)
+
+Playing a tetris rom:
+
+![tetris rom](./images/tetris.png)
